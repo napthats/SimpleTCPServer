@@ -22,31 +22,26 @@ import Data.IORef
 import Data.List
 import Control.Monad
 import Control.Monad.STM
+import qualified Utils.Id as UI
 
     
 newtype SimpleTCPServer = SimpleTCPServer (IORef [Client], Socket, ThreadId)
-newtype ClientID = ClientID Integer
-                   deriving (Eq, Show)
+newtype ClientID = ClientID UI.Id
+                 deriving (Eq, Show)
 data ClientStatus = Live | Dead
 type Client = (ClientID, TChan String, TChan String, IORef ClientStatus)
 
 newClientID :: ClientID
-newClientID = ClientID 0
+newClientID = ClientID UI.newId
 
 nextClientID :: ClientID -> ClientID
-nextClientID (ClientID x) = ClientID $ x + 1
+nextClientID (ClientID x) = ClientID $ UI.nextId x
 
 getClientID :: Client -> ClientID
 getClientID (cid, _, _, _) = cid 
 
 getWchan :: Client -> TChan String
 getWchan (_, wchan, _, _) = wchan
-
---getRchan :: Client -> TChan String
---getRchan (_, _, rchan, _) = rchan
-
---getStref :: Client -> IORef ClientStatus
---getStref (_, _, _, stref) = stref
 
 isLive :: Client -> IO Bool
 isLive (_, _, _, stref) = do
@@ -63,10 +58,6 @@ shutdownServer (SimpleTCPServer (_, sock, threadid)) = do
 runTCPServer :: PortNumber -> IO SimpleTCPServer
 runTCPServer port = do
   clientListRef <- newIORef []
---  sock <- socket AF_INET Stream 0
---  setSocketOption sock ReuseAddr 1
---  bindSocket sock (SockAddrInet port iNADDR_ANY)
---  listen sock 2
   sock <- listenOn $ PortNumber port
   threadid <- forkIO $ acceptLoop sock clientListRef newClientID
   _ <- forkIO $ clientStatusCheckLoop clientListRef
@@ -95,7 +86,6 @@ acceptLoop sock clientListRef cid = do
 
 runClient :: Handle -> TChan String -> TChan String -> IORef ClientStatus -> IO ()
 runClient hdl wchan rchan stref = do
---  hdl <- socketToHandle sock ReadWriteMode
   hSetBuffering hdl NoBuffering
   reader <- forkIO $ fix $ \loop -> do
     msg <- atomically $ readTChan rchan
@@ -109,7 +99,9 @@ runClient hdl wchan rchan stref = do
   atomicModifyIORef stref (\_ -> (Dead, ()))
   hClose hdl
 
-
+--return a message if exists
+--it's oldest about messages of same client
+--no consistency about priority of clients
 getClientMessage :: SimpleTCPServer -> IO (Maybe (ClientID, String))
 getClientMessage (SimpleTCPServer (clientListRef, _, _)) = do
   clientList <- atomicModifyIORef clientListRef (\x -> (x, x))
@@ -120,6 +112,8 @@ getClientMessage (SimpleTCPServer (clientListRef, _, _)) = do
       return $ Just (cid, msg)
     Nothing -> return Nothing
 
+--return a message from a certain client if exists
+--it's oldest about messages of same client
 getClientMessageFrom :: SimpleTCPServer -> ClientID -> IO (Maybe String)
 getClientMessageFrom (SimpleTCPServer (clientListRef, _, _)) cid = do
   clientList <- atomicModifyIORef clientListRef (\x -> (x, x))
@@ -133,6 +127,10 @@ getClientMessageFrom (SimpleTCPServer (clientListRef, _, _)) cid = do
                       return $ Just msg
     Nothing -> return Nothing
 
+--return a list of one message for each client.
+--ignore client with no message (so length of the list is the number of clients with messages)
+--it's oldest about messages of same client
+--no consistency about an order of messages
 getEachClientMessages :: SimpleTCPServer -> IO [(ClientID, String)]
 getEachClientMessages (SimpleTCPServer (clientListRef, _, _)) = do
   clientList <- atomicModifyIORef clientListRef (\x -> (x, x))
@@ -160,6 +158,9 @@ broadcastMessage (SimpleTCPServer (clientListRef, _, _)) msg = do
   clientList <- atomicModifyIORef clientListRef (\x -> (x, x))
   mapM_ (\(_, _, rchan, _) -> atomically $ writeTChan rchan msg) clientList
 
+--return if a message can be sent
+--False means that a client already disconnected
+--disconnect check is executed every seconds
 sendMessageTo :: SimpleTCPServer -> ClientID -> String -> IO Bool
 sendMessageTo (SimpleTCPServer (clientListRef, _, _)) cid msg = do
   clientList <- atomicModifyIORef clientListRef (\x -> (x, x))
