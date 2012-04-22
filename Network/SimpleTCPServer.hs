@@ -66,7 +66,7 @@ runTCPServer port = do
 clientStatusCheckLoop :: IORef [Client] -> IO ()
 clientStatusCheckLoop clientListRef = do
   clientList <- atomicModifyIORef clientListRef (\x -> (x, x))
-  toDeleteClientList <- filterWithIOBool (liftM not . isLive) clientList
+  toDeleteClientList <- filterM (liftM not . isLive) clientList
   atomicModifyIORef clientListRef
     (\list -> (filter
                (\client -> notElem (getClientID client) (map getClientID toDeleteClientList))
@@ -105,7 +105,7 @@ runClient hdl wchan rchan stref = do
 getClientMessage :: SimpleTCPServer -> IO (Maybe (ClientID, String))
 getClientMessage (SimpleTCPServer (clientListRef, _, _)) = do
   clientList <- atomicModifyIORef clientListRef (\x -> (x, x))
-  maybeChan <- findWithIOBool (atomically . liftM not . isEmptyTChan . getWchan) clientList
+  maybeChan <- findM (atomically . liftM not . isEmptyTChan . getWchan) clientList
   case maybeChan of
     Just (cid, wchan, _, _) -> do 
       msg <- atomically $ readTChan wchan
@@ -134,23 +134,15 @@ getClientMessageFrom (SimpleTCPServer (clientListRef, _, _)) cid = do
 getEachClientMessages :: SimpleTCPServer -> IO [(ClientID, String)]
 getEachClientMessages (SimpleTCPServer (clientListRef, _, _)) = do
   clientList <- atomicModifyIORef clientListRef (\x -> (x, x))
-  notEmptyChanList <- filterWithIOBool (atomically . liftM not . isEmptyTChan . getWchan) clientList
+  notEmptyChanList <- filterM (atomically . liftM not . isEmptyTChan . getWchan) clientList
   mapM (\(cid, wchan, _, _) -> do {msg <- atomically $ readTChan wchan; return (cid, msg)}) notEmptyChanList  
 
-findWithIOBool :: (a -> IO Bool) -> [a] -> IO (Maybe a)
-findWithIOBool _ [] = return Nothing
-findWithIOBool predict (x:xs) = do
+findM :: (Monad m) => (a -> m Bool) -> [a] -> m (Maybe a)
+findM _ [] = return Nothing
+findM predict (x:xs) = do
   predResult <- predict x
   if predResult then return $ Just x
-                else findWithIOBool predict xs
-
-filterWithIOBool :: (a -> IO Bool) -> [a] -> IO [a]
-filterWithIOBool _ [] = return []
-filterWithIOBool predict (x:xs) = do
-  predResult <- predict x
-  remainder <- filterWithIOBool predict xs
-  if predResult then return $ x : remainder
-                else filterWithIOBool predict xs
+                else findM predict xs
 
 
 broadcastMessage :: SimpleTCPServer -> String -> IO ()
