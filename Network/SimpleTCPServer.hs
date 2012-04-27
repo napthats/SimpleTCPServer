@@ -20,6 +20,7 @@ import Control.Exception
 import Control.Monad.Fix (fix)
 import Data.IORef
 import Data.List
+import Data.String.Utils (replace)
 import Control.Monad
 import Control.Monad.STM
 import qualified Utils.Id as UI
@@ -93,7 +94,8 @@ runClient hdl wchan rchan stref = do
     loop
   handle (\(SomeException _) -> return ()) $ fix $ \loop -> do
     line <- hGetLine hdl
-    atomically $ writeTChan wchan line
+    let chomped_line = replace "\r" "" line
+    atomically $ writeTChan wchan chomped_line
     loop
   killThread reader
   atomicModifyIORef stref (\_ -> (Dead, ()))

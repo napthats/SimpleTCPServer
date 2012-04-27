@@ -282,3 +282,8 @@ tests = TestList [TestLabel "getClientMessageTest" getClientMessageTest,
                   TestLabel "getEachClientMessagesTest" getEachClientMessagesTest,
                   TestLabel "broadcastMessageTest" broadcastMessageTest,
                   TestLabel "sendMessageToTest" sendMessageToTest]
+
+main :: IO ()
+main = do
+  _ <- runTestTT tests
+  return ()
