@@ -8,6 +8,7 @@ module Network.SimpleTCPServer
      getEachClientMessages,
      broadcastMessage,
      sendMessageTo,
+     disconnectClient,
      shutdownServer,
     ) where
 
@@ -30,7 +31,7 @@ newtype SimpleTCPServer = SimpleTCPServer (IORef [Client], Socket, ThreadId)
 newtype ClientID = ClientID UI.Id
                  deriving (Eq, Show)
 data ClientStatus = Live | Dead
-type Client = (ClientID, TChan String, TChan String, IORef ClientStatus)
+type Client = (ClientID, TChan String, TChan String, IORef ClientStatus, ThreadId)
 
 newClientID :: ClientID
 newClientID = ClientID UI.newId
@@ -39,13 +40,13 @@ nextClientID :: ClientID -> ClientID
 nextClientID (ClientID x) = ClientID $ UI.nextId x
 
 getClientID :: Client -> ClientID
-getClientID (cid, _, _, _) = cid 
+getClientID (cid, _, _, _, _) = cid 
 
 getWchan :: Client -> TChan String
-getWchan (_, wchan, _, _) = wchan
+getWchan (_, wchan, _, _, _) = wchan
 
 isLive :: Client -> IO Bool
-isLive (_, _, _, stref) = do
+isLive (_, _, _, stref, _) = do
   st <- atomicModifyIORef stref (\x -> (x, x))
   case st of 
     Dead -> return False
@@ -55,6 +56,14 @@ shutdownServer :: SimpleTCPServer -> IO ()
 shutdownServer (SimpleTCPServer (_, sock, threadid)) = do
   killThread threadid
   sClose sock
+
+disconnectClient :: SimpleTCPServer -> ClientID -> IO Bool
+disconnectClient (SimpleTCPServer (clientListRef, _, _)) cid = do
+  clientList <- atomicModifyIORef clientListRef (\x -> (x, x))
+  maybeClient <- return $ find ((==) cid . getClientID) clientList
+  case maybeClient of 
+    Just (_, _, _, _, cthread) -> do {killThread cthread; return True}
+    Nothing -> return False
 
 runTCPServer :: PortNumber -> IO SimpleTCPServer
 runTCPServer port = do
@@ -68,6 +77,7 @@ clientStatusCheckLoop :: IORef [Client] -> IO ()
 clientStatusCheckLoop clientListRef = do
   clientList <- atomicModifyIORef clientListRef (\x -> (x, x))
   toDeleteClientList <- filterM (liftM not . isLive) clientList
+  mapM_ (\(_, _, _, _, cthread) -> killThread cthread) toDeleteClientList
   atomicModifyIORef clientListRef
     (\list -> (filter
                (\client -> notElem (getClientID client) (map getClientID toDeleteClientList))
@@ -81,8 +91,8 @@ acceptLoop sock clientListRef cid = do
   wchan <- atomically newTChan
   rchan <- atomically newTChan
   stref <- newIORef Live
-  atomicModifyIORef clientListRef (\x -> ((cid, wchan, rchan, stref):x, ()))
-  _ <- forkIO $ runClient hdl wchan rchan stref
+  cthread <- forkIO $ runClient hdl wchan rchan stref
+  atomicModifyIORef clientListRef (\x -> ((cid, wchan, rchan, stref, cthread):x, ()))
   acceptLoop sock clientListRef $ nextClientID cid
 
 runClient :: Handle -> TChan String -> TChan String -> IORef ClientStatus -> IO ()
@@ -109,7 +119,7 @@ getClientMessage (SimpleTCPServer (clientListRef, _, _)) = do
   clientList <- atomicModifyIORef clientListRef (\x -> (x, x))
   maybeChan <- findM (atomically . liftM not . isEmptyTChan . getWchan) clientList
   case maybeChan of
-    Just (cid, wchan, _, _) -> do 
+    Just (cid, wchan, _, _, _) -> do 
       msg <- atomically $ readTChan wchan
       return $ Just (cid, msg)
     Nothing -> return Nothing
@@ -121,7 +131,7 @@ getClientMessageFrom (SimpleTCPServer (clientListRef, _, _)) cid = do
   clientList <- atomicModifyIORef clientListRef (\x -> (x, x))
   maybeClient <- return $ find ((==) cid . getClientID) clientList
   case maybeClient of
-    Just (_, wchan, _, _) -> do
+    Just (_, wchan, _, _, _) -> do
       isEmpty <- atomically $ isEmptyTChan wchan
       if isEmpty then return Nothing
                  else do
@@ -137,7 +147,7 @@ getEachClientMessages :: SimpleTCPServer -> IO [(ClientID, String)]
 getEachClientMessages (SimpleTCPServer (clientListRef, _, _)) = do
   clientList <- atomicModifyIORef clientListRef (\x -> (x, x))
   notEmptyChanList <- filterM (atomically . liftM not . isEmptyTChan . getWchan) clientList
-  mapM (\(cid, wchan, _, _) -> do {msg <- atomically $ readTChan wchan; return (cid, msg)}) notEmptyChanList  
+  mapM (\(cid, wchan, _, _, _) -> do {msg <- atomically $ readTChan wchan; return (cid, msg)}) notEmptyChanList  
 
 findM :: (Monad m) => (a -> m Bool) -> [a] -> m (Maybe a)
 findM _ [] = return Nothing
@@ -150,7 +160,7 @@ findM predict (x:xs) = do
 broadcastMessage :: SimpleTCPServer -> String -> IO ()
 broadcastMessage (SimpleTCPServer (clientListRef, _, _)) msg = do
   clientList <- atomicModifyIORef clientListRef (\x -> (x, x))
-  mapM_ (\(_, _, rchan, _) -> atomically $ writeTChan rchan msg) clientList
+  mapM_ (\(_, _, rchan, _, _) -> atomically $ writeTChan rchan msg) clientList
 
 --return if a message can be sent
 --False means that a client already disconnected
@@ -160,7 +170,8 @@ sendMessageTo (SimpleTCPServer (clientListRef, _, _)) cid msg = do
   clientList <- atomicModifyIORef clientListRef (\x -> (x, x))
   maybeClient <- return $ find ((==) cid . getClientID) clientList
   case maybeClient of
-    Just (_, _, rchan, _) -> do
+    Just (_, _, rchan, _, _) -> do
       atomically $ writeTChan rchan msg
       return True
     Nothing -> return False
+
