@@ -1,3 +1,9 @@
+ABSTRACT
+========
+
+SimpleTCPServer: a simple tcp server for chat-server or game-server or etc.
+
+
 USAGE
 =====
 
